@@ -6,8 +6,8 @@ This repository contains the official, anonymized implementation of **XCues**, a
 
 Unlike spatial attribution methods (e.g., Grad-CAM) that highlight *where* evidence is located, XCues quantifies *what* visual properties matter. It evaluates a complete combinatorial intervention space ($2^4 = 16$ states) over four interpretable cue families: **Geometry, Texture, Color, and Context**, yielding mathematically exact Shapley attributions without requiring gradient access or model retraining.
 
-## 🖼️ Visual Teaser: XCues vs. Grad-CAM
-![XCues vs Grad-CAM Comparison](xcues_comparison.png)
+## 🖼️ XCues vs. Grad-CAM
+![XCues vs Grad-CAM Comparison](dddffdff.jpeg)
 
 ## 🚀 Quickstart: Explain a Single Image
 
