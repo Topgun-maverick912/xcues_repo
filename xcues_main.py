@@ -15,10 +15,7 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 # ==========================================
 # 0. SETTINGS & PATHS (ANONYMIZED)
 # ==========================================
-# USER: Replace with your Hugging Face token if required for downloading weights locally
-HF_TOKEN = "YOUR_HF_TOKEN_HERE" 
-
-# USER: Point this to a sample ImageNet image in your repository folder
+HF_TOKEN = "YOUR_HF_TOKEN_HERE"
 IMAGE_PATH = "./sample_image.jpg"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Running Fast 16-State XCues Analyzer on: {DEVICE}")
@@ -26,6 +23,8 @@ print(f"Running Fast 16-State XCues Analyzer on: {DEVICE}")
 # ==========================================
 # 1. CORE XCUES FUNCTIONS
 # ==========================================
+GEOM_PERM = [13, 8, 11, 6, 5, 0, 3, 14, 2, 15, 12, 9, 10, 7, 4, 1]
+
 def preprocess_image(img_raw, size=224):
     img = np.array(img_raw.convert('RGB'))
     h, w = img.shape[:2]
@@ -53,6 +52,7 @@ def get_feathered_mask(img_224, seg_model, device):
     
     mask_ratio = mask_binary.mean()
     if mask_ratio < 0.05 or mask_ratio > 0.95:
+        # Fallback to 70% center box if segmentation mask coverage is <5% or >95%
         mask_binary = np.zeros((224, 224), dtype=bool)
         ch, cw = int(224 * 0.7), int(224 * 0.7)
         mask_binary[(224-ch)//2:(224+ch)//2, (224-cw)//2:(224+cw)//2] = True
@@ -61,16 +61,24 @@ def get_feathered_mask(img_224, seg_model, device):
     mask_feathered = cv2.GaussianBlur(mask_float, (21, 21), 0)
     return np.expand_dims(mask_feathered, axis=-1)
 
-def apply_filters(img, active_cues, mask_3d, geom_seed=42):
+def suppress_geometry(img, grid_size=4):
+    h, w, _ = img.shape
+    ph, pw = h // grid_size, w // grid_size
+    patches = [img[i*ph:(i+1)*ph, j*pw:(j+1)*pw] for i in range(grid_size) for j in range(grid_size)]
+    patches = [patches[k] for k in GEOM_PERM]
+    rows = [np.hstack(patches[r*grid_size:(r+1)*grid_size]) for r in range(grid_size)]
+    return np.vstack(rows)
+
+def apply_filters(img, active_cues, mask_3d):
     out = img.astype(np.float32)
     
-    # Context Suppression
+    # Context Suppression (sigma=15)
     if active_cues[3] == 0: 
-        bg = cv2.GaussianBlur(out, (99, 99), 0)
+        bg = cv2.GaussianBlur(out, (99, 99), 15)
         out = (out * mask_3d) + (bg * (1.0 - mask_3d))
     out = np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
-    # Spectral Appearance Suppression
+    # Color (Spectral Appearance) Suppression
     if active_cues[2] == 0: 
         gray = cv2.cvtColor(out, cv2.COLOR_RGB2GRAY)
         out = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
@@ -79,16 +87,9 @@ def apply_filters(img, active_cues, mask_3d, geom_seed=42):
     if active_cues[1] == 0: 
         out = cv2.bilateralFilter(out, d=11, sigmaColor=170, sigmaSpace=75)
         
-    # Geometry Suppression
+    # Geometry Suppression (Deterministic Annealed Permutation)
     if active_cues[0] == 0: 
-        h, w, c = out.shape
-        grid = 4
-        ph, pw = h // grid, w // grid
-        patches = [out[i*ph:(i+1)*ph, j*pw:(j+1)*pw] for i in range(grid) for j in range(grid)]
-        np.random.seed(geom_seed) 
-        np.random.shuffle(patches)
-        rows = [np.hstack(patches[i*grid:(i+1)*grid]) for i in range(grid)]
-        out = np.vstack(rows)
+        out = suppress_geometry(out, grid_size=4)
         
     return out
 
@@ -133,7 +134,7 @@ batch_images = []
 state_to_indices = {}
 
 for i, state in enumerate(ALL_STATES):
-    filtered = apply_filters(img_224, state, mask_3d, geom_seed=42)
+    filtered = apply_filters(img_224, state, mask_3d)
     batch_images.append(filtered)
     state_to_indices[state] = [i]
 
@@ -187,7 +188,6 @@ with torch.no_grad():
         avg_logit = batch_logits[indices, pred_class].mean().item()
         state_logits[state] = avg_logit
 
-# Calculate Exact Shapley
 shapley_logits = calculate_shapley_from_dict(state_logits)
 pos_shapley = np.clip(shapley_logits, 0, None)
 total_impact = max(pos_shapley.sum(), 1e-12)
